@@ -4,4 +4,4 @@ __pycache__/
 .vscode/
 data/raw/
 data/processed/
-data/raw/
+data/raw/sshkeyfile*
