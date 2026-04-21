@@ -43,6 +43,7 @@ def predict_scores_ranking(
     user_ratings = user_item_matrix.loc[user_id]
     similarities = user_similarity_df.loc[user_id].drop(user_id)
 
+    #KEEP ONLY POSITEVELY CORRELATED USERS:
     similarities = similarities[similarities > 0]
     top_k_users = similarities.sort_values(ascending=False).head(k)
 
@@ -98,9 +99,15 @@ def predict_ratings_top_k(
 
             # onlt keep predictions where we have at least min_neighbors contributing
 
-            if denominator > 0 and neighbor_count >= min_neighbors:
-                predicted_rating = user_means[user_id] + (numerator / denominator)
-                predictions[movie_id] = predicted_rating
+            if denominator == 0 or neighbor_count < min_neighbors:
+               continue
+
+            predicted_rating = user_means[user_id] + (numerator / denominator)
+
+            # Clip to MovieLens range
+            predicted_rating = min(5.0, max(1.0, predicted_rating))
+
+            predictions[movie_id] = predicted_rating
 
     return predictions
 
