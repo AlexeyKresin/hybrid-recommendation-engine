@@ -1,7 +1,17 @@
+# Python cache
 __pycache__/
 *.pyc
+
+# Environment
 .env
+
+# IDE
 .vscode/
+
+# Data (do not track datasets)
 data/raw/
 data/processed/
-data/raw/
+data/raw/sshkeyfile*
+
+# Jupyter
+notebooks/.ipynb_checkpoints/
