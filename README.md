@@ -1,23 +1,28 @@
 # Hybrid Recommendation Engine
 
+#Authors:
+
+1. Naga Venkata Kolli
+2. Alexey Kresin
+
 ## Overview
 
 This project implements a **hybrid recommendation system** that combines:
 
-* Collaborative Filtering (user behavior)
-* Content-Based Filtering (item attributes)
+- Collaborative Filtering (user behavior)
+- Content-Based Filtering (item attributes)
 
-The system is designed to provide personalized recommendations while addressing the **cold-start problem** (new users or new items with little or no interaction data).
+The system provides personalized recommendations while addressing the **cold-start problem** (new users or items with limited interaction data).
 
 ---
 
 ## Project Objectives
 
-* Build a scalable recommendation pipeline
-* Compare baseline recommendation approaches
-* Develop a hybrid model combining multiple signals
-* Analyze sparsity and its impact on recommendations
-* Address cold-start scenarios
+- Build a scalable recommendation pipeline
+- Compare baseline recommendation approaches
+- Develop a hybrid model combining multiple signals
+- Analyze sparsity and its impact on recommendations
+- Address cold-start scenarios
 
 ---
 
@@ -25,143 +30,122 @@ The system is designed to provide personalized recommendations while addressing 
 
 This project uses the **MovieLens 100K dataset** provided by GroupLens.
 
-> Note: The dataset is **not included** in this repository to keep it lightweight.
+> Note: The dataset is **not included** in this repository.
 
----
+To download the dataset:
+
+bash
+python src/data_processing/download_data.py
+
+## Dataset location after download:
+
+data/raw/movielens/
 
 ## Project Structure
 
-```
 hybrid-recommendation-engine/
 │
 ├── data/
-│   ├── raw/              # raw dataset (not tracked by Git)
+│   ├── raw/              # raw dataset (not tracked)
 │   └── processed/        # processed data
 │
-├── notebooks/            # Jupyter notebooks (EDA, experiments)
+├── notebooks/            # Jupyter notebooks (EDA)
 │
 ├── src/
-│   ├── data_processing/  # data loading and preprocessing
-│   ├── models/           # recommendation models
-│   ├── evaluation/       # evaluation metrics
-│   └── utils/            # helper functions
+│   ├── data_processing/  # data loading & preprocessing
+│   ├── models/           # CF, CB, Hybrid models
+│   ├── evaluation/       # metrics and comparison
+│   ├── utils/            # helper functions
+│   ├── evaluate.py       # evaluation script
+│   └── demo.py           # demo script
 │
-├── experiments/          # model experiments
-├── docs/                 # documentation and reports
+├── experiments/          # experiments and results
+├── docs/                 # diagrams (draw.io), reports
 │
 ├── requirements.txt
 ├── README.md
 └── .gitignore
-```
 
----
+## Installation:
 
-## Setup Instructions
-
-### 1. Clone the repository
-
-```bash
+1. Clone repository:
 git clone https://github.com/AlexeyKresin/hybrid-recommendation-engine.git
 cd hybrid-recommendation-engine
-```
 
----
-
-### 2. Install dependencies
-
-```bash
+2. Install Dependencies:
 pip install -r requirements.txt
-```
 
----
+#How to run:
 
-### 3. Download the dataset
+Run Evaluation:
+python -m src.evaluate
 
-Run:
+Run Demo:
+python -m src.demo
 
-```bash
-python src/data_processing/download_data.py
-```
+# What it shows:
+This will:
 
-This will automatically download and extract the dataset into:
+Generate recommendations for a sample user
+Show results from:
+Collaborative Filtering
+Content-Based Filtering
+Hybrid Model
 
-```
-data/raw/movielens/
-```
+####################
+#################### MODELS
+####################
 
----
 
-## Usage
+#Collaborative Filtering:
 
-### Run Exploratory Data Analysis (EDA)
+User-based approach
+Uses cosine similarity
+Mean-centered ratings
+Supports:
+Ranking
+Rating prediction
 
-Open and run:
+#Content-Based Filtering
 
-```
-notebooks/eda_movielens.ipynb
-```
+Uses item features (e.g., genres)
+Builds user profiles from liked items
+Computes similarity between user and items
 
-This notebook includes:
+# Hybrid Model
+Combines both approaches:
+hybrid_score = α * CF + (1 - α) * CB\
+α controls contribution of each model
+Helps mitigate cold-start issues
 
-* Dataset overview
-* Sparsity analysis
-* Rating distribution visualization
+####################
+#################### EVALUATION Metrics
+####################
 
----
+Evaluation Metrics
+Precision@K → ranking quality
+RMSE → rating prediction accuracy
+Evaluation Strategy
+Per-user train/test split
+Simulates real-world recommendation scenario
 
-## Key Concepts
+#Key Concepts
 
-### Sparsity
+Key Concepts
+Sparsity
+Most users rate only a small subset of items
+Leads to sparse user-item matrix
+Cold-Start Problem
+New users → no interaction history
+New items → no ratings
 
-The user-item interaction matrix is highly sparse, meaning:
+Hybrid model helps address both cases.
 
-* Most users rate only a small fraction of items
-* This motivates the use of recommendation systems
+#Future Improvements
 
-### Cold-Start Problem
-
-Occurs when:
-
-* A new user has no history
-* A new item has no ratings
-
-The hybrid model aims to address this limitation.
-
----
-
-## Models (Planned)
-
-* User-based Collaborative Filtering
-* Item-based Collaborative Filtering
-* Content-Based Filtering
-* Hybrid Recommendation Model (main contribution)
-
----
-
-## Evaluation Metrics
-
-* RMSE (Root Mean Squared Error)
-* Precision@K
-* Recall@K
-
----
-
-## Team
-
-* Alexey Kresin
-* Naga Venkata Kolli
-
----
-
-## Future Improvements
-
-* Neural recommendation models (deep learning)
-* Embedding-based approaches
-* Real-time recommendation API
-* Deployment (optional)
-
----
-
-## License
-
-This project is licensed under the MIT License.
+Item-based collaborative filtering
+Matrix factorization (SVD)
+Deep learning recommendation models
+Feature engineering improvements
+Hyperparameter tuning
+Real-time recommendation API
