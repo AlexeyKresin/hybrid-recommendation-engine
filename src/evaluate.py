@@ -21,6 +21,7 @@ from src.evaluation.compare_models import compare_models
 
 
 def main() -> None:
+    total_start = time.time()
     project_root = Path(__file__).resolve().parents[1]
     data_dir = project_root / "data" / "raw" / "movielens"
 
@@ -68,9 +69,15 @@ def main() -> None:
     print("=" * 60)
 
     start = time.time()
-    #comparison_df = compare_models(ratings, movies)
+    comparison_df = compare_models(ratings, movies)
     print(comparison_df.to_string(index=False))
     print(f"Model comparison time: {time.time() - start:.2f} seconds")
+    
+    #measure total execution time
+    
+    print("\n" + "=" * 60)
+    print(f"TOTAL EVALUATION TIME: {time.time() - total_start:.2f} seconds")
+    print("=" * 60)
 
 
 if __name__ == "__main__":
