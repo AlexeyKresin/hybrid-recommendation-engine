@@ -1,25 +1,37 @@
 """
-Module: content_based_filtering.py
+content_based_filtering.py
 
-Description:
-This module implements a content-based recommendation system using movie genres.
+Purpose:
+--------
+Implements Content-Based Filtering for movie recommendations.
 
 Core Idea:
-- Each movie is represented as a feature vector (genres)
-- Each user is represented as a profile (average of liked movies)
-- Recommendations are generated based on similarity between user profile and movies
+----------
+Recommend movies that are similar to movies the user already liked.
 
-Key Steps:
-1. Build movie feature matrix
-2. Build user profile from liked items
-3. Compute similarity between user profile and unseen items
+Movie Features:
+---------------
+- Genre indicators
+- TF-IDF title features
+- Normalized release year
+
+Workflow:
+---------
+1. Build a movie feature matrix
+2. Build a user profile from movies the user liked
+3. Compute cosine similarity between the user profile and all movies
+4. Recommend the most similar unseen movies
 """
 
+import re
+
+import numpy as np
 import pandas as pd
+from scipy.sparse import csr_matrix, hstack
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 
-# Genre feature columns (MovieLens dataset)
 GENRE_COLUMNS = [
     "unknown",
     "Action",
@@ -43,33 +55,77 @@ GENRE_COLUMNS = [
 ]
 
 
+def extract_year(title: str) -> int | None:
+    """
+    Extract release year from a movie title.
+
+    Example:
+    --------
+    "Toy Story (1995)" -> 1995
+    """
+    match = re.search(r"\((\d{4})\)", str(title))
+    return int(match.group(1)) if match else None
+
+
 def build_movie_feature_matrix(movies_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Create a movie feature matrix based on genre indicators.
+    Build feature vectors for all movies.
 
-    Args:
-        movies_df (DataFrame): Movies dataset with genre columns
-
-    Returns:
-        DataFrame: Matrix where rows = movies, columns = genres
+    Features include:
+    - Genre columns
+    - TF-IDF title representation
+    - Normalized release year
     """
-    feature_matrix = movies_df[["movie_id"] + GENRE_COLUMNS].copy()
-    feature_matrix = feature_matrix.set_index("movie_id")
+    movies = movies_df.copy()
 
-    return feature_matrix
+    # Genre features: binary indicators such as Action, Comedy, Drama
+    genre_matrix = csr_matrix(movies[GENRE_COLUMNS].values)
+
+    # Title features: TF-IDF captures useful words from movie titles
+    title_text = movies["title"].fillna("")
+    tfidf = TfidfVectorizer(
+        stop_words="english",
+        lowercase=True,
+        max_features=500,
+    )
+    title_matrix = tfidf.fit_transform(title_text)
+
+    # Year feature: normalize release year to range [0, 1]
+    movies["year"] = movies["title"].apply(extract_year)
+    movies["year"] = movies["year"].fillna(movies["year"].median())
+
+    year_values = movies["year"].values.reshape(-1, 1)
+    year_range = year_values.max() - year_values.min()
+
+    if year_range == 0:
+        normalized_year = np.zeros_like(year_values)
+    else:
+        normalized_year = (year_values - year_values.min()) / year_range
+
+    year_matrix = csr_matrix(normalized_year)
+
+    # Combine all content features into one movie representation
+    combined_matrix = hstack(
+        [
+            genre_matrix,
+            title_matrix,
+            year_matrix,
+        ]
+    )
+
+    return pd.DataFrame(
+        combined_matrix.toarray(),
+        index=movies["movie_id"],
+    )
 
 
 def compute_movie_similarity(movie_feature_matrix: pd.DataFrame) -> pd.DataFrame:
     """
-    Compute cosine similarity between movies based on genre features.
+    Compute movie-to-movie cosine similarity.
 
-    Args:
-        movie_feature_matrix (DataFrame): Movie feature matrix
-
-    Returns:
-        DataFrame: Movie-to-movie similarity matrix
+    This is useful for inspecting which movies are similar to each other.
     """
-    similarity = cosine_similarity(movie_feature_matrix)
+    similarity = cosine_similarity(movie_feature_matrix.values)
 
     return pd.DataFrame(
         similarity,
@@ -82,65 +138,58 @@ def build_user_profile(
     user_id: int,
     ratings_df: pd.DataFrame,
     movie_feature_matrix: pd.DataFrame,
-    min_rating: float = 4.0,
+    min_rating: float = 3.0,
 ) -> pd.Series:
     """
-    Build a user profile based on liked movies.
+    Build a content profile for one user.
 
-    The profile is the average feature vector of movies the user rated above a threshold.
+    The profile is the average feature vector of movies the user liked.
+    Movies with rating >= min_rating are treated as positive examples.
 
-    Args:
-        user_id (int): Target user
-        ratings_df (DataFrame): Ratings dataset
-        movie_feature_matrix (DataFrame): Movie feature matrix
-        min_rating (float): Threshold for "liked" movies
-
-    Returns:
-        Series: User preference vector over genres
+    The final profile is normalized so cosine similarity focuses on direction.
     """
-    # Get user's ratings
     user_ratings = ratings_df[ratings_df["user_id"] == user_id]
 
-    # Select movies the user liked
     liked_movies = user_ratings[user_ratings["rating"] >= min_rating]["movie_id"]
+    liked_movie_ids = movie_feature_matrix.index.intersection(liked_movies)
 
-    # Get feature vectors of liked movies
-    liked_features = movie_feature_matrix.loc[
-        movie_feature_matrix.index.intersection(liked_movies)
-    ]
-
-    # If no liked movies → return zero vector
-    if liked_features.empty:
+    if liked_movie_ids.empty:
         return pd.Series(0.0, index=movie_feature_matrix.columns)
 
-    # User profile = average feature vector
-    return liked_features.mean(axis=0)
+    liked_features = movie_feature_matrix.loc[liked_movie_ids]
+
+    user_profile = liked_features.mean(axis=0)
+
+    profile_norm = np.linalg.norm(user_profile)
+
+    if profile_norm > 0:
+        user_profile = user_profile / profile_norm
+
+    return user_profile
 
 
 def recommend_content_based(
     user_id: int,
     ratings_df: pd.DataFrame,
-    movies_df: pd.DataFrame,
+    movies_df: pd.DataFrame | None = None,
+    movie_feature_matrix: pd.DataFrame | None = None,
     top_n: int = 10,
-    min_rating: float = 4.0,
+    min_rating: float = 3.0,
 ) -> dict[int, float]:
     """
-    Generate content-based recommendations for a user.
-
-    Args:
-        user_id (int): Target user
-        ratings_df (DataFrame): Ratings dataset
-        movies_df (DataFrame): Movies dataset
-        top_n (int): Number of recommendations
-        min_rating (float): Threshold for liked movies
+    Generate content-based recommendation scores for a user.
 
     Returns:
-        dict: {movie_id: similarity_score}
+    --------
+    dict:
+        {movie_id: content_similarity_score}
     """
-    # Build feature matrix
-    movie_feature_matrix = build_movie_feature_matrix(movies_df)
+    if movie_feature_matrix is None:
+        if movies_df is None:
+            raise ValueError("Either movies_df or movie_feature_matrix must be provided")
 
-    # Build user profile
+        movie_feature_matrix = build_movie_feature_matrix(movies_df)
+
     user_profile = build_user_profile(
         user_id=user_id,
         ratings_df=ratings_df,
@@ -148,31 +197,27 @@ def recommend_content_based(
         min_rating=min_rating,
     )
 
-    # If user has no preferences → return empty
     if user_profile.sum() == 0:
         return {}
 
-    # Movies already seen by user
     seen_movies = set(
-        ratings_df[ratings_df["user_id"] == user_id]["movie_id"].tolist()
+        ratings_df.loc[ratings_df["user_id"] == user_id, "movie_id"]
     )
 
-    scores = {}
+    user_vector = user_profile.values.reshape(1, -1)
 
-    # Compute similarity between user profile and each unseen movie
-    for movie_id, features in movie_feature_matrix.iterrows():
+    similarity_scores = cosine_similarity(
+        user_vector,
+        movie_feature_matrix.values,
+    )[0]
 
-        if movie_id in seen_movies:
-            continue
+    # Return only movies the user has not already rated
+    scores = {
+        movie_id: float(score)
+        for movie_id, score in zip(movie_feature_matrix.index, similarity_scores)
+        if movie_id not in seen_movies
+    }
 
-        score = cosine_similarity(
-            [user_profile.values],
-            [features.values]
-        )[0][0]
+    top_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_n]
 
-        scores[movie_id] = float(score)
-
-    # Sort and return top-N
-    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_n]
-
-    return dict(ranked)
+    return dict(top_scores)

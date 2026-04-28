@@ -1,31 +1,33 @@
 """
-Module: hybrid_recommender.py
+hybrid_recommender.py
 
-Description:
-This module combines collaborative filtering and content-based scores
-into a hybrid recommendation model.
+Purpose:
+--------
+Combines Collaborative Filtering and Content-Based Filtering into one
+hybrid recommendation score.
 
 Core Idea:
-- Normalize scores from different models to a common scale
-- Combine them using a weighted sum
+----------
+CF and content-based models produce scores on different scales.
+Before combining them, both score sets are normalized to [0, 1].
 
 Formula:
-    hybrid_score = alpha * CF_score + (1 - alpha) * CB_score
+--------
+hybrid_score = alpha * CF_score + (1 - alpha) * Content_score
 
-Where:
-    alpha = 1.0 → fully collaborative
-    alpha = 0.0 → fully content-based
+Alpha Meaning:
+--------------
+alpha = 1.0 -> fully collaborative filtering
+alpha = 0.0 -> fully content-based filtering
+alpha = 0.8 -> 80% CF, 20% content
 """
+
 
 def min_max_normalize(scores: dict[int, float]) -> dict[int, float]:
     """
-    Normalize scores to the range [0, 1] using min-max scaling.
+    Normalize scores to the range [0, 1].
 
-    Args:
-        scores (dict): {item_id: score}
-
-    Returns:
-        dict: {item_id: normalized_score}
+    This makes CF and content scores comparable before combining.
     """
     if not scores:
         return {}
@@ -33,7 +35,7 @@ def min_max_normalize(scores: dict[int, float]) -> dict[int, float]:
     min_score = min(scores.values())
     max_score = max(scores.values())
 
-    # Handle edge case: all scores are identical
+    # If all scores are equal, assign every item the same normalized value.
     if max_score == min_score:
         return {movie_id: 1.0 for movie_id in scores}
 
@@ -46,39 +48,37 @@ def min_max_normalize(scores: dict[int, float]) -> dict[int, float]:
 def combine_scores(
     collaborative_scores: dict[int, float],
     content_scores: dict[int, float],
-    alpha: float = 0.7
+    alpha: float = 0.8,
 ) -> dict[int, float]:
     """
-    Combine collaborative and content-based scores into hybrid scores.
+    Combine CF and content-based scores.
 
     Steps:
-    1. Normalize both score sets to [0, 1]
-    2. Take union of all items
-    3. Compute weighted sum
-
-    Args:
-        collaborative_scores (dict): CF scores {item_id: score}
-        content_scores (dict): CB scores {item_id: score}
-        alpha (float): Weight for collaborative component (0–1)
+    ------
+    1. Normalize CF scores to [0, 1]
+    2. Normalize content scores to [0, 1]
+    3. Take the union of candidate movies
+    4. Compute weighted hybrid score
 
     Returns:
-        dict: {item_id: hybrid_score}
+    --------
+    dict:
+        {movie_id: hybrid_score}
     """
-
-    # Normalize scores to make them comparable
     collaborative_scores = min_max_normalize(collaborative_scores)
     content_scores = min_max_normalize(content_scores)
 
-    # Union of all candidate items
     all_movie_ids = set(collaborative_scores.keys()) | set(content_scores.keys())
 
     hybrid_scores = {}
 
     for movie_id in all_movie_ids:
         cf_score = collaborative_scores.get(movie_id, 0.0)
-        cb_score = content_scores.get(movie_id, 0.0)
+        content_score = content_scores.get(movie_id, 0.0)
 
-        # Weighted combination
-        hybrid_scores[movie_id] = alpha * cf_score + (1 - alpha) * cb_score
+        hybrid_scores[movie_id] = (
+            alpha * cf_score
+            + (1 - alpha) * content_score
+        )
 
     return hybrid_scores

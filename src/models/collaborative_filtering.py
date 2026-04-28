@@ -1,61 +1,74 @@
 """
-Module: collaborative_filtering.py
+collaborative_filtering.py
 
-Description:
-This module implements user-based collaborative filtering.
+Purpose:
+--------
+Implements User-Based Collaborative Filtering (CF).
 
-Main Components:
-- Normalization (mean-centering per user)
-- User similarity computation (cosine similarity)
-- Ranking-based recommendation (implicit scoring)
-- Rating prediction (explicit prediction)
-- Top-N recommendation extraction
+Core Idea:
+----------
+Users with similar preferences will rate items similarly.
 
-Key Concepts:
-- Similar users influence recommendations
-- Ratings are normalized to remove user bias
-- Predictions use weighted averages of neighbors
+Pipeline:
+---------
+1. Normalize ratings (mean-centering per user)
+2. Compute similarity between users (cosine similarity)
+3. Use top-K similar users to:
+   - Generate ranking scores (for recommendations)
+   - Predict ratings (for RMSE)
+
+Includes:
+---------
+- Fast vectorized ranking (used in evaluation)
+- Rating prediction (top-K)
+- Single rating prediction (optimized for RMSE)
 """
 
+import numpy as np
 import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
 
 
-def normalize_user_item_matrix(user_item_matrix: pd.DataFrame) -> tuple[pd.Series, pd.DataFrame]:
+# --------------------------------------------------
+# Step 1: Normalize User Ratings
+# --------------------------------------------------
+
+def normalize_user_item_matrix(
+    user_item_matrix: pd.DataFrame,
+) -> tuple[pd.Series, pd.DataFrame]:
     """
-    Mean-center each user's ratings.
+    Normalize ratings by subtracting each user's mean.
 
-    This removes user bias (e.g., users who rate consistently high or low).
-
-    Args:
-        user_item_matrix (DataFrame): User-item ratings matrix
+    Why:
+    ----
+    Removes user bias (e.g., some users rate higher than others).
+    This makes similarity more meaningful.
 
     Returns:
-        tuple:
-            - user_means (Series): Mean rating per user
-            - normalized_matrix (DataFrame): Mean-centered ratings
+    --------
+    user_means : average rating per user
+    normalized_matrix : mean-centered ratings
     """
     user_means = user_item_matrix.mean(axis=1)
-
-    # Subtract each user's mean from their ratings
     normalized_matrix = user_item_matrix.sub(user_means, axis=0)
 
     return user_means, normalized_matrix
 
 
+# --------------------------------------------------
+# Step 2: Compute User Similarity
+# --------------------------------------------------
+
 def compute_user_similarity(normalized_matrix: pd.DataFrame) -> pd.DataFrame:
     """
     Compute cosine similarity between users.
 
-    Missing values are replaced with 0 after normalization.
+    Why:
+    ----
+    Measures how similar users are based on rating patterns.
 
-    Args:
-        normalized_matrix (DataFrame): Mean-centered user-item matrix
-
-    Returns:
-        DataFrame: User-user similarity matrix
+    Missing values are treated as 0.
     """
-    # Fill missing values with 0 (neutral after normalization)
     filled_matrix = normalized_matrix.fillna(0)
 
     similarity = cosine_similarity(filled_matrix)
@@ -63,64 +76,73 @@ def compute_user_similarity(normalized_matrix: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(
         similarity,
         index=normalized_matrix.index,
-        columns=normalized_matrix.index
+        columns=normalized_matrix.index,
     )
 
 
-def predict_scores_ranking(
+# --------------------------------------------------
+# Step 3: Fast Ranking (Main Recommendation Function)
+# --------------------------------------------------
+
+def predict_scores_ranking_fast(
     user_id: int,
     user_item_matrix: pd.DataFrame,
     user_similarity_df: pd.DataFrame,
-    k: int = 20
+    k: int = 20,
 ) -> dict[int, float]:
     """
-    Compute ranking-based recommendation scores.
+    Compute recommendation scores for all unseen items.
 
-    Higher score = more relevant item.
-    NOTE: These are NOT actual predicted ratings.
+    This is the main CF function used for:
+    - Precision@K evaluation
+    - Hybrid model
 
-    Args:
-        user_id (int): Target user
-        user_item_matrix (DataFrame): User-item matrix
-        user_similarity_df (DataFrame): User similarity matrix
-        k (int): Number of nearest neighbors
+    Key Idea:
+    ---------
+    Score(item) = sum(similarity * neighbor_rating)
 
-    Returns:
-        dict: {item_id: score}
+    Optimization:
+    -------------
+    Fully vectorized → much faster than nested loops.
     """
     if user_id not in user_item_matrix.index:
-        raise ValueError(f"user_id {user_id} not found in user-item matrix")
+        raise ValueError(f"user_id {user_id} not found")
 
     user_ratings = user_item_matrix.loc[user_id]
 
-    # Get similarity scores for the user (exclude self)
     similarities = user_similarity_df.loc[user_id].drop(user_id)
 
-    # Keep only positively correlated users
+    # Use only positively similar users
     similarities = similarities[similarities > 0]
 
-    # Select top-k most similar users
+    if similarities.empty:
+        return {}
+
+    # Select top-K neighbors
     top_k_users = similarities.sort_values(ascending=False).head(k)
 
-    scores: dict[int, float] = {}
+    neighbor_ratings = user_item_matrix.loc[top_k_users.index]
 
-    for movie_id in user_item_matrix.columns:
+    sims = top_k_users.to_numpy().reshape(-1, 1)
 
-        # Only score items the user has not rated
-        if pd.isna(user_ratings[movie_id]):
-            score = 0.0
+    # Weighted sum of neighbor ratings
+    scores_array = (neighbor_ratings.fillna(0).to_numpy() * sims).sum(axis=0)
 
-            # Weighted sum of neighbors' ratings
-            for other_user, sim in top_k_users.items():
-                other_rating = user_item_matrix.loc[other_user, movie_id]
+    unseen_mask = user_ratings.isna().to_numpy()
+    movie_ids = user_item_matrix.columns.to_numpy()
 
-                if not pd.isna(other_rating):
-                    score += sim * other_rating
-
-            scores[movie_id] = score
+    scores = {
+        int(movie_id): float(score)
+        for movie_id, score, unseen in zip(movie_ids, scores_array, unseen_mask)
+        if unseen
+    }
 
     return scores
 
+
+# --------------------------------------------------
+# Step 4: Predict Ratings (Top-K)
+# --------------------------------------------------
 
 def predict_ratings_top_k(
     user_id: int,
@@ -128,38 +150,30 @@ def predict_ratings_top_k(
     user_similarity_df: pd.DataFrame,
     user_means: pd.Series,
     k: int = 20,
-    min_neighbors: int = 3
+    min_neighbors: int = 3,
 ) -> dict[int, float]:
     """
-    Predict actual ratings using collaborative filtering.
+    Predict actual ratings for unseen items.
+
+    Why:
+    ----
+    Used for displaying predicted ratings (not for evaluation).
 
     Formula:
-        r̂_ui = μ_u + (Σ(sim(u,v) * (r_vi - μ_v))) / Σ|sim(u,v)|
-
-    Args:
-        user_id (int): Target user
-        user_item_matrix (DataFrame): User-item matrix
-        user_similarity_df (DataFrame): User similarity matrix
-        user_means (Series): Mean ratings per user
-        k (int): Number of neighbors
-        min_neighbors (int): Minimum required neighbors for prediction
-
-    Returns:
-        dict: {item_id: predicted_rating}
+    --------
+    r_hat = user_mean + weighted deviation from neighbors
     """
     if user_id not in user_item_matrix.index:
-        raise ValueError(f"user_id {user_id} not found in user-item matrix")
+        raise ValueError(f"user_id {user_id} not found")
 
     user_ratings = user_item_matrix.loc[user_id]
 
     similarities = user_similarity_df.loc[user_id].drop(user_id)
     top_k_users = similarities.sort_values(ascending=False).head(k)
 
-    predictions: dict[int, float] = {}
+    predictions = {}
 
     for movie_id in user_item_matrix.columns:
-
-        # Predict only for unseen items
         if pd.isna(user_ratings[movie_id]):
 
             numerator = 0.0
@@ -174,32 +188,74 @@ def predict_ratings_top_k(
                     denominator += abs(sim)
                     neighbor_count += 1
 
-            # Skip if not enough neighbors or invalid denominator
             if denominator == 0 or neighbor_count < min_neighbors:
                 continue
 
-            predicted_rating = user_means[user_id] + (numerator / denominator)
+            predicted_rating = user_means[user_id] + numerator / denominator
 
-            # Clip predictions to MovieLens rating range
-            predicted_rating = min(5.0, max(1.0, predicted_rating))
-
-            predictions[movie_id] = predicted_rating
+            # Clip to valid range
+            predictions[movie_id] = min(5.0, max(1.0, predicted_rating))
 
     return predictions
 
 
+# --------------------------------------------------
+# Step 5: Fast Single Prediction (RMSE)
+# --------------------------------------------------
+
+def predict_single_rating(
+    user_id: int,
+    movie_id: int,
+    user_item_matrix: pd.DataFrame,
+    user_similarity_df: pd.DataFrame,
+    user_means: pd.Series,
+    k: int = 20,
+) -> float:
+    """
+    Predict rating for ONE (user, movie) pair.
+
+    Why:
+    ----
+    Used for RMSE evaluation (fast and efficient).
+
+    Avoids computing full recommendation lists.
+    """
+    if user_id not in user_item_matrix.index:
+        return np.nan
+
+    if movie_id not in user_item_matrix.columns:
+        return user_means.get(user_id, np.nan)
+
+    similarities = user_similarity_df.loc[user_id].drop(user_id)
+    top_k_users = similarities.sort_values(ascending=False).head(k)
+
+    numerator = 0.0
+    denominator = 0.0
+
+    for other_user, sim in top_k_users.items():
+        other_rating = user_item_matrix.loc[other_user, movie_id]
+
+        if not pd.isna(other_rating):
+            numerator += sim * (other_rating - user_means[other_user])
+            denominator += abs(sim)
+
+    if denominator == 0:
+        return user_means[user_id]
+
+    predicted_rating = user_means[user_id] + numerator / denominator
+
+    return min(5.0, max(1.0, predicted_rating))
+
+
+# --------------------------------------------------
+# Utility: Top-N Recommendation Extraction
+# --------------------------------------------------
+
 def recommend_top_n(
     scores: dict[int, float],
-    top_n: int = 10
+    top_n: int = 10,
 ) -> list[tuple[int, float]]:
     """
-    Return top-N items based on scores.
-
-    Args:
-        scores (dict): {item_id: score}
-        top_n (int): Number of items to return
-
-    Returns:
-        list of tuples: [(item_id, score), ...]
+    Return top-N items sorted by score.
     """
     return sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_n]
