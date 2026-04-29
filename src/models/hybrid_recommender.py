@@ -82,3 +82,59 @@ def combine_scores(
         )
 
     return hybrid_scores
+
+def get_adaptive_alpha(
+    user_id: int,
+    ratings_df,
+    min_alpha: float = 0.55,
+    max_alpha: float = 0.9,
+    max_ratings: int = 50,
+) -> float:
+    """
+    Compute user-specific alpha based on rating history.
+
+    Few ratings  -> lower alpha -> rely more on Content-Based
+    Many ratings -> higher alpha -> rely more on Collaborative Filtering
+    """
+    user_rating_count = len(ratings_df[ratings_df["user_id"] == user_id])
+
+    confidence = min(user_rating_count / max_ratings, 1.0)
+
+    alpha = min_alpha + confidence * (max_alpha - min_alpha)
+
+    return alpha
+
+
+def combine_scores_adaptive(
+    user_id: int,
+    ratings_df,
+    collaborative_scores: dict[int, float],
+    content_scores: dict[int, float],
+    min_alpha: float = 0.2,
+    max_alpha: float = 0.9,
+    max_ratings: int = 50,
+) -> tuple[dict[int, float], float]:
+    """
+    Combine CF and Content-Based scores using user-specific adaptive alpha.
+
+    Returns:
+    --------
+    tuple:
+        hybrid_scores: {movie_id: hybrid_score}
+        alpha: adaptive alpha used for this user
+    """
+    alpha = get_adaptive_alpha(
+        user_id=user_id,
+        ratings_df=ratings_df,
+        min_alpha=min_alpha,
+        max_alpha=max_alpha,
+        max_ratings=max_ratings,
+    )
+
+    hybrid_scores = combine_scores(
+        collaborative_scores=collaborative_scores,
+        content_scores=content_scores,
+        alpha=alpha,
+    )
+
+    return hybrid_scores, alpha

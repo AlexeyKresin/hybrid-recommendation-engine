@@ -1,31 +1,19 @@
 """
 compare_models.py
 
-Purpose:
---------
-Efficiently compare multiple recommendation models:
-- Collaborative Filtering (CF)
+Compares:
+- Collaborative Filtering
 - Content-Based Filtering
-- Hybrid model (CF + Content)
+- Fixed-alpha Hybrid model
+- Adaptive-alpha Hybrid model
 
-Key Features:
--------------
-- Caches CF and Content scores per user (no recomputation)
-- Supports alpha tuning for hybrid model
-- Supports cold-start simulation
-- Evaluates using Precision@5 and Precision@10
-
-Workflow:
----------
-1. Split data into train/test
-2. (Optional) simulate cold-start by limiting ratings per user
-3. Build matrices and similarity models
-4. Precompute scores for all users
-5. Evaluate CF, Content, and Hybrid models
+Supports:
+- Normal model comparison
+- New User Cold Start simulation
 """
 
-import pandas as pd
 import time
+import pandas as pd
 
 from src.data_processing.data_loader import build_user_item_matrix
 from src.models.collaborative_filtering import (
@@ -37,23 +25,19 @@ from src.models.content_based_filtering import (
     recommend_content_based,
     build_movie_feature_matrix,
 )
-from src.models.hybrid_recommender import combine_scores
+from src.models.hybrid_recommender import combine_scores, combine_scores_adaptive
 from src.evaluation.metrics import (
     train_test_split_per_user,
     precision_at_k,
 )
 
 
-# ----------------------------
-# Helper Functions
-# ----------------------------
-
-def _get_relevant_items(test_df: pd.DataFrame, user_id: int, min_rating: float = 4.0) -> set[int]:
-    """
-    Get relevant (liked) items for evaluation.
-
-    Only items with rating >= min_rating are considered relevant.
-    """
+def _get_relevant_items(
+    test_df: pd.DataFrame,
+    user_id: int,
+    min_rating: float = 4.0,
+) -> set[int]:
+    """Return movies rated highly by a user in the test set."""
     user_test = test_df[test_df["user_id"] == user_id]
     return set(user_test[user_test["rating"] >= min_rating]["movie_id"])
 
@@ -64,12 +48,18 @@ def _rank_items(scores: dict[int, float], k: int) -> list[int]:
     return [movie_id for movie_id, _ in ranked[:k]]
 
 
-def simulate_cold_start_train(train_df, ratings_per_user: int = 5):
-    """
-    Simulate cold-start scenario:
-    Limit each user to a small number of ratings.
+def _mean(values: list[float]) -> float:
+    """Safely compute mean."""
+    return sum(values) / len(values) if values else 0.0
 
-    This reduces available user history and tests model robustness.
+
+def simulate_cold_start_train(
+    train_df: pd.DataFrame,
+    ratings_per_user: int = 5,
+) -> pd.DataFrame:
+    """
+    Simulate new-user cold start by limiting each user
+    to a small number of training ratings.
     """
     return (
         train_df
@@ -80,65 +70,51 @@ def simulate_cold_start_train(train_df, ratings_per_user: int = 5):
     )
 
 
-# ----------------------------
-# Main Comparison Function
-# ----------------------------
-
 def compare_models(
     ratings: pd.DataFrame,
     movies: pd.DataFrame,
     alphas: list[float] | None = None,
     k_neighbors: int = 20,
     eval_user_limit: int | None = None,
+    cold_start: bool = True,
+    ratings_per_user: int = 5,
 ) -> pd.DataFrame:
+    """
+    Compare CF, Content-Based, Fixed Hybrid, and Adaptive Hybrid recommenders.
+
+    If cold_start=True, each user is limited to ratings_per_user
+    training ratings to simulate the New User Cold Start scenario.
+    """
 
     start = time.time()
-
-    # ----------------------------
-    # Step 1: Train/Test Split
-    # ----------------------------
-    print("Step 1: Splitting data...")
 
     if alphas is None:
         alphas = [0.3, 0.5, 0.7]
 
+    print("Step 1: Splitting data...")
     train_df, test_df = train_test_split_per_user(ratings, test_size=5)
-
     print(f"Completed in {time.time() - start:.2f}s")
 
-    # ----------------------------
-    # Step 2: Cold-start Simulation (optional)
-    # ----------------------------
-    USE_COLD_START = True
+    if cold_start:
+        print(
+            f"Step 2: Simulating new-user cold start "
+            f"({ratings_per_user} ratings/user)..."
+        )
+        train_df = simulate_cold_start_train(
+            train_df,
+            ratings_per_user=ratings_per_user,
+        )
 
-    if USE_COLD_START:
-        print("=== COLD START EXPERIMENT (5 ratings/user) ===")
-        train_df = simulate_cold_start_train(train_df, ratings_per_user=5)
-
-    # ----------------------------
-    # Step 3: Build User-Item Matrix
-    # ----------------------------
-    print("Step 2: Building user-item matrix...")
+    print("Step 3: Building user-item matrix...")
     train_matrix = build_user_item_matrix(train_df)
 
-    # ----------------------------
-    # Step 4: Normalize + Similarity
-    # ----------------------------
-    print("Step 3: Normalizing matrix...")
-    user_means, normalized_matrix = normalize_user_item_matrix(train_matrix)
-
     print("Step 4: Computing user similarity...")
+    _, normalized_matrix = normalize_user_item_matrix(train_matrix)
     user_similarity_df = compute_user_similarity(normalized_matrix)
 
-    # ----------------------------
-    # Step 5: Content Features
-    # ----------------------------
     print("Step 5: Building movie feature matrix...")
     movie_feature_matrix = build_movie_feature_matrix(movies)
 
-    # ----------------------------
-    # Step 6: Select Evaluation Users
-    # ----------------------------
     eval_users = [
         user_id
         for user_id in test_df["user_id"].unique()
@@ -150,24 +126,21 @@ def compare_models(
 
     print(f"Step 6: Processing {len(eval_users)} users...")
 
-    # ----------------------------
-    # Step 7: Precompute Scores (KEY OPTIMIZATION)
-    # ----------------------------
     cf_scores_cache = {}
     content_scores_cache = {}
     relevant_items_cache = {}
 
-    for i, user_id in enumerate(eval_users):
-        if i % 50 == 0:
-            print(f"Processing user {i+1}/{len(eval_users)}")
+    for i, user_id in enumerate(eval_users, start=1):
+        if i == 1 or i % 50 == 0:
+            print(f"Processing user {i}/{len(eval_users)}")
 
         relevant_items = _get_relevant_items(test_df, user_id)
+
         if not relevant_items:
             continue
 
         relevant_items_cache[user_id] = relevant_items
 
-        # --- CF scores
         cf_scores_cache[user_id] = predict_scores_ranking_fast(
             user_id=user_id,
             user_item_matrix=train_matrix,
@@ -175,7 +148,6 @@ def compare_models(
             k=k_neighbors,
         )
 
-        # --- Content scores
         content_scores_cache[user_id] = recommend_content_based(
             user_id=user_id,
             ratings_df=train_df,
@@ -190,14 +162,13 @@ def compare_models(
     evaluated_users = list(relevant_items_cache.keys())
 
     if not evaluated_users:
-        return pd.DataFrame(columns=["model", "precision@5", "precision@10", "rmse"])
+        return pd.DataFrame(
+            columns=["model", "precision@5", "precision@10", "rmse", "avg_alpha"]
+        )
 
     results = []
 
-    # ----------------------------
-    # Step 8: Evaluate CF
-    # ----------------------------
-    print("Step 8: Evaluating Collaborative Filtering...")
+    print("Step 7: Evaluating Collaborative Filtering...")
 
     cf_precision_5 = []
     cf_precision_10 = []
@@ -206,20 +177,22 @@ def compare_models(
         relevant_items = relevant_items_cache[user_id]
         cf_scores = cf_scores_cache[user_id]
 
-        cf_precision_5.append(precision_at_k(_rank_items(cf_scores, 5), relevant_items, 5))
-        cf_precision_10.append(precision_at_k(_rank_items(cf_scores, 10), relevant_items, 10))
+        cf_precision_5.append(
+            precision_at_k(_rank_items(cf_scores, 5), relevant_items, 5)
+        )
+        cf_precision_10.append(
+            precision_at_k(_rank_items(cf_scores, 10), relevant_items, 10)
+        )
 
     results.append({
         "model": "Collaborative Filtering",
-        "precision@5": sum(cf_precision_5) / len(cf_precision_5),
-        "precision@10": sum(cf_precision_10) / len(cf_precision_10),
+        "precision@5": _mean(cf_precision_5),
+        "precision@10": _mean(cf_precision_10),
         "rmse": None,
+        "avg_alpha": None,
     })
 
-    # ----------------------------
-    # Step 9: Evaluate Content
-    # ----------------------------
-    print("Step 9: Evaluating Content-Based...")
+    print("Step 8: Evaluating Content-Based...")
 
     content_precision_5 = []
     content_precision_10 = []
@@ -228,24 +201,24 @@ def compare_models(
         relevant_items = relevant_items_cache[user_id]
         content_scores = content_scores_cache[user_id]
 
-        content_precision_5.append(precision_at_k(_rank_items(content_scores, 5), relevant_items, 5))
-        content_precision_10.append(precision_at_k(_rank_items(content_scores, 10), relevant_items, 10))
+        content_precision_5.append(
+            precision_at_k(_rank_items(content_scores, 5), relevant_items, 5)
+        )
+        content_precision_10.append(
+            precision_at_k(_rank_items(content_scores, 10), relevant_items, 10)
+        )
 
     results.append({
         "model": "Content-Based",
-        "precision@5": sum(content_precision_5) / len(content_precision_5),
-        "precision@10": sum(content_precision_10) / len(content_precision_10),
+        "precision@5": _mean(content_precision_5),
+        "precision@10": _mean(content_precision_10),
         "rmse": None,
+        "avg_alpha": None,
     })
 
-    # ----------------------------
-    # Step 10: Evaluate Hybrid (alpha tuning)
-    # ----------------------------
-    print("Step 10: Evaluating Hybrid models...")
+    print("Step 9: Evaluating Fixed Hybrid models...")
 
     for alpha in alphas:
-        print(f"Evaluating alpha={alpha:.2f}")
-
         hybrid_precision_5 = []
         hybrid_precision_10 = []
 
@@ -258,15 +231,56 @@ def compare_models(
                 alpha=alpha,
             )
 
-            hybrid_precision_5.append(precision_at_k(_rank_items(hybrid_scores, 5), relevant_items, 5))
-            hybrid_precision_10.append(precision_at_k(_rank_items(hybrid_scores, 10), relevant_items, 10))
+            hybrid_precision_5.append(
+                precision_at_k(_rank_items(hybrid_scores, 5), relevant_items, 5)
+            )
+            hybrid_precision_10.append(
+                precision_at_k(_rank_items(hybrid_scores, 10), relevant_items, 10)
+            )
 
         results.append({
-            "model": f"Hybrid alpha={alpha}",
-            "precision@5": sum(hybrid_precision_5) / len(hybrid_precision_5),
-            "precision@10": sum(hybrid_precision_10) / len(hybrid_precision_10),
+            "model": f"Hybrid alpha={alpha:.2f}",
+            "precision@5": _mean(hybrid_precision_5),
+            "precision@10": _mean(hybrid_precision_10),
             "rmse": None,
+            "avg_alpha": alpha,
         })
+
+    print("Step 10: Evaluating Adaptive Hybrid model...")
+
+    adaptive_precision_5 = []
+    adaptive_precision_10 = []
+    adaptive_alphas = []
+
+    for user_id in evaluated_users:
+        relevant_items = relevant_items_cache[user_id]
+
+        adaptive_scores, user_alpha = combine_scores_adaptive(
+            user_id=user_id,
+            ratings_df=train_df,
+            collaborative_scores=cf_scores_cache[user_id],
+            content_scores=content_scores_cache[user_id],
+            min_alpha=0.6,
+            max_alpha=0.9,
+            max_ratings=50,
+        )
+
+        adaptive_alphas.append(user_alpha)
+
+        adaptive_precision_5.append(
+            precision_at_k(_rank_items(adaptive_scores, 5), relevant_items, 5)
+        )
+        adaptive_precision_10.append(
+            precision_at_k(_rank_items(adaptive_scores, 10), relevant_items, 10)
+        )
+
+    results.append({
+        "model": "Adaptive Hybrid",
+        "precision@5": _mean(adaptive_precision_5),
+        "precision@10": _mean(adaptive_precision_10),
+        "rmse": None,
+        "avg_alpha": _mean(adaptive_alphas),
+    })
 
     print(f"Total runtime: {time.time() - start:.2f}s")
 
